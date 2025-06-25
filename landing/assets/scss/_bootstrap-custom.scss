@@ -1,0 +1,97 @@
+//
+// Bootstrap-custom.scss
+//
+
+.container {
+    @media (min-width: 1400px) {
+        max-width: 1140px !important;
+    }
+}
+
+.row > * {
+    position: relative;
+}
+
+@each $heading,
+$size in $font-sizes {
+    #{$heading} {
+        font-size: $size;
+    }
+}
+
+@each $heading,
+$size in $display-font-sizes {
+    .#{$heading},
+    #{$heading} {
+        font-size: $size !important;
+    }
+}
+
+@each $name,
+$value in $colors {
+    .bg-#{$name} {
+        background-color: #{$value} !important;
+    }
+    .text-#{$name} {
+        color: #{$value} !important;
+    }
+    a {
+        &.text-#{$name} {
+            &:hover,
+            &:focus {
+                color: darken($value, 10%) !important;
+            }
+        }
+    }
+}
+
+.d-flex {
+    .flex-1 {
+        flex: 1;
+    }
+}
+
+//li (list inline item)
+.list-inline-item:not(:last-child) {
+    margin-right: 0px;
+    margin-bottom: 0px;
+} 
+// Rounded
+.rounded {
+    border-radius: 5px !important;
+}
+.rounded-top {
+    border-top-left-radius: 5px !important;
+    border-top-right-radius: 5px !important;
+}
+.rounded-left {
+    border-top-left-radius: 5px !important;
+    border-bottom-left-radius: 5px !important;
+}
+.rounded-bottom {
+    border-bottom-left-radius: 5px !important;
+    border-bottom-right-radius: 5px !important;
+}
+.rounded-right {
+    border-top-right-radius: 5px !important;
+    border-bottom-right-radius: 5px !important;
+}
+
+@media (max-width: 768px) {
+    .display-1 {
+        font-size: 56px !important;
+    }
+    .display-2 {
+        font-size: 50px !important;
+    }
+    .display-3 {
+        font-size: 42px !important;
+    }
+    .display-4 {
+        font-size: 36px !important;
+    }
+}
+//Small
+.small, small {
+    font-size: 90%;
+}

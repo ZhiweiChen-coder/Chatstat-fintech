@@ -1,0 +1,46 @@
+// ---------------------------------------------------------
+// Bootstrap specific variables below
+// ---------------------------------------------------------
+
+// $font-family-base: 'Barlow', sans-serif;
+$enable-responsive-font-sizes: true;
+
+$small-font-size: .825em;
+
+$body-color: #354563;
+
+// $text-muted: #a5a4bf;
+
+$primary: #1D86A1;
+$secondary: rgba(0, 0, 0, 0.2);
+$success: #25D366;
+$green: #25D366;
+$warning: #D94E48;
+$danger: #A11D4B;
+$dark: #35626E;
+$light: #f0f0f7;
+
+
+// $list-group-bg: transparent;
+// $list-group-hover-bg: rgba(160, 192, 251, 0.1);
+// $list-group-active-bg: rgba(160, 192, 251, 0.1);
+// $list-group-action-active-bg: rgba(160, 192, 251, 0.1);
+
+// $table-hover-bg: rgba(160, 192, 251, 0.1);
+
+// Base theme bootstrap config
+$spacer: 1.5rem; // set to the baseline (ie.line height)
+$spacers: (
+	0: 0,
+	1: ($spacer * .25),
+	2: ($spacer * .5),
+	3: ($spacer * .75),
+	4: $spacer,
+	5: ($spacer * 1.5),
+	6: ($spacer * 2.5),
+	7: ($spacer * 5)
+);
+
+// $enable-rounded: false;
+
+$print-page-size: auto; // https://github.com/twbs/bootstrap/issues/25629

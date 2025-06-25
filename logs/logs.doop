@@ -1,0 +1,46 @@
+<script lang="js" backend schema>
+var _ = require('lodash');
+/**
+* Generic logging sub-system
+* Each log is a HTML payload (stored as 'body') attached to col(lection) / doc
+*
+* Body elements should wrap simple classes in span elements
+* Inserts: {body: 'Order created'}
+* Changes: {body: 'Status changed<code>Foo</code> to <code>Bar</code>'
+*/
+app.middleware.db.schema('logs', {
+	created: {type: Date, default: ()=> new Date(), index: true},
+	creator: {type: 'pointer', ref: 'users', index: true},
+	col: {type: String},
+	doc: {type: String}, // Either the OID of the pointer document or a string pointing to a product / customer in MySQL
+	body: {type: String},
+	type: {type: String}, // ENUM: (success, warn, error)
+})
+	.index(['col', 'doc'])
+
+	/**
+	* Trim down a log entry to user-facing exposable safe data
+	* This basically picks all data that the user is allowed to see
+	* @returns {Object} User visible version of a log entry
+	*/
+	.method('digest', function() {
+		return {
+			id: this._id,
+			..._.pick(this, ['created', 'type', 'body']),
+		};
+	})
+</script>
+
+
+<script lang="js" backend endpoint>
+app.use('/api/logs/:id?', app.middleware.express.rest('logs', {
+	data: req => req.user ? {user: req.user._id} : undefined,
+	query: app.middleware.express.isUser(),
+	get: 'query',
+	count: 'query',
+	create: false,
+	save: false,
+	meta: false,
+	delete: false,
+}));
+</script>

@@ -1,0 +1,12 @@
+<script lang="js" backend on="migrations">
+app.migration('givePermissions', 'Give new permissions to admins', ()=>
+	app.db.users
+		.find({ username: { $in: ['adam@mfdc.io', 'ljkusz@gmail.com', 'matt@mfdc.io'] }})
+		.then(res => res.map(u => {
+			u.permissions.riversGlobalCreate = true;
+			u.permissions.riversStaticCreate = true;
+			return u.save();
+		}))
+		.then(promises => Promise.all(promises))
+)
+</script>

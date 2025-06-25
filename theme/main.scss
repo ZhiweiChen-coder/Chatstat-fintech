@@ -1,0 +1,23 @@
+// Bootstrap variables
+@import 'partials/dependencies/variables';
+
+
+// Vendors
+@import "node_modules/bootstrap/scss/bootstrap";
+
+
+// Layout
+// @import 'partials/layout/example';
+
+
+// Content
+@import 'partials/content/typography';
+
+
+// Components
+@import 'partials/components/cs-gauge';
+@import 'partials/components/icons';
+
+
+// Overrides
+// @import 'partials/overrides/example';

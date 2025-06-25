@@ -1,0 +1,589 @@
+<script lang="js" backend schema>
+const email = require('@momsfriendlydevco/email');
+const fs = require('fs');
+const _ = require('lodash');
+const axios = require('axios').default;
+
+// Platform to singular {{{
+// TODO: Encapsulate duplication
+function platformSingular(platform){
+	const map = {
+		facebook: 'post',
+		twitter: 'tweet',
+		rss: 'RSS',
+	};
+
+	return map[platform.toLowerCase()]
+}
+///}}}
+
+app.middleware.db.schema('platforms_data', {
+	created: {type: Date, default: ()=> new Date(), index: true},
+	edited: {type: Date, default: ()=> new Date()},
+	platform: {type: String, index: true},
+	symbol: {type: String, index: true},
+	// TODO: A field with unique index for platform agnostic tracking
+	// identifier/uniq?: {type: String, index: true, unique: true},
+	date: {type: Date, index: true},
+	data: {type: Object},
+	/**
+	data: { // (when {platform:'twitter'})
+		id: String,
+		author_id: String,
+		created_at: String<Date>, // Why is this not a native date object? Twitter sends them as ISO strings, Bitfinex as epochs.
+		text: String,
+		public_metrics: {
+			retweet_count: Number,
+			reply_count: Number,
+			like_count: Number,
+			quote_count: Number,
+		},
+	}
+	data: { // (when {platform:'bitfinex'})
+		d: 1364947200000,    // Date
+		o: 117.95826131,     // Open
+		c: 117.81528725,     // Close
+		h: 117.95826131,     // High
+		l: 116.3,            // Low
+		v: 529.1314040699999 // Volume
+	},
+	*/
+	sentiment: { // Sentiment analysis compiled lazily by agent
+		affin: Number, // Can be non-existent, if so agent will fill in when run, float from -5 to +5
+		affinPercent: Number, // Can be non-existent, percentage easing of the above affin value as a float from -1 to +1 (e.g. -0.4, 0.8)
+	},
+})
+.index({ platform: 1, symbol: 1 })
+.index({ platform: 1, symbol: 1, date: -1 })
+
+// Check new records in background for matches
+.pre('save', function() {
+	const doc = this;
+	// Only send notifications on create
+	if (!doc.isNew) return Promise.resolve();
+
+	// TODO: We could save matches in a collecton here so that they can be retrieved without re-matching client-side.
+	let logo;
+	let text = '';
+	switch (doc.platform) {
+		case 'twitter':
+			text = doc.data.text;
+			break;
+		default:
+			// Skipping, not supported
+			//console.warn('Notifications not yet supported for this platform');
+			return;
+	}
+
+	return Promise.resolve()
+		// Fetch email attachments {{{
+		.then(()=> Promise.all([
+			fs.promises
+				.readFile(`${app.config.paths.root}/assets/logo/logo-full-primary.png`)
+				.then(res => logo = res)
+		]))
+		// }}}
+
+		// Find rivers watching this stream with matching terms
+		.then(() => app.db.rivers.find({
+			notifications: true,
+			'streams.platform': doc.platform,
+			'streams.symbol': doc.symbol,
+		}))
+		// TODO: Include in the query?
+		.then(rivers => rivers
+			.filter(r => r.terms.map(t => t.term)
+				.some(t => text.toLowerCase().includes(t.toLowerCase()))
+			)
+		)
+		.then(matches =>
+			// Each match sequentually
+			Promise.allSeries(matches.map(m => () =>
+				app.db.users.find({
+					_id: {
+						$in: m.users.map(({user}) => user).reduce((acc, cur) => {
+							acc.push(cur)
+							return acc;
+						}, [])
+					}
+				}, { _id: 1, name: 1, email: 1 })
+				.then(users =>
+					// Each user sequentually
+					Promise.allSeries(users.map(user => () => {
+						// Send notification
+						app.log('Sending notification', doc.platform, doc.symbol, m.title, user.email);
+
+						// Testing email.enabled after queries to support multiple notification types in future
+						if (app.config.email.enabled) {
+							return email().send({
+								from: app.config.email.from,
+								to: user.email,
+								subject: `New event for ${m.title}`,
+								cc: [],
+								attachments: [
+									{
+										filename: 'logo.png',
+										cid: 'logo.png',
+										content: logo.toString('base64'),
+										contentType: 'image/png',
+										encoding: 'base64',
+									}
+								],
+								template: `${app.config.paths.root}/emails/emailTemplates.email.notification.html`,
+								templateParams: {
+									river: m.title,
+									stream: doc.data.author_name,
+									symbol: `@${doc.symbol}`,
+									type: platformSingular(doc.platform),
+									logo: `${app.config.publicUrl}/assets/logo/logo.svg`,
+									//url: `${app.config.publicUrl}/rivers/${m._id}`,
+									url: `${app.config.publicUrl}/tweets/${doc._id}`,
+									signoff: app.config.email.signoff,
+									config: _.pick(app.config, [
+										'name',
+										'title',
+										'email',
+										'session',
+									]),
+								},
+							});
+						}
+					}))
+				)
+			))
+		);
+});
+
+app.middleware.db.schema('platforms_data_movement', {
+	created: {type: Date, default: ()=> new Date()},
+	platform: {type: String, index: true, required: true},
+	symbol: {type: String, index: true, required: true},
+	platform_data: {type: 'pointer', ref: 'platforms_data', required: true},
+	values: {
+		// hour0* available immediately
+		hour0ActualCalculated: {type: Boolean, default: false}, // Indicates if hour0 calculations have been completed
+		hour0Actual: {type: Number}, // Market price when tweet made
+
+		// hour3Actual* - available when tweet is >=3 hours old
+		hour3ActualCalculated: {type: Boolean, default: false}, // Indicates if hour3 calculations have been completed
+		hour3Actual: {type: Number, default: null}, // Market price 3 hour offset
+		hour3ActualPercent: {type: Number}, // Market price 3 hour offset as float (0 - 1) percent
+
+		// hour3Estimate* - available immediately (if we have enough historical data)
+		hour3EstimateCalculated: {type: Boolean, default: false}, // Estimated market price at 3 hour offset
+		hour3Estimate: {type: Number}, // Estimated market price at 3 hour offset
+		hour3EstimatePercent: {type: Number}, // Estimated market price movement at 3 hour offset
+
+		// hour12Actual* - available when tweet is >=12 hours old
+		hour12ActualCalculated: {type: Boolean, default: false}, // Indicates if hour12 calculations have been completed
+		hour12Actual: {type: Number}, // Market price 12 hour offset
+		hour12ActualPercent: {type: Number}, // Market price 12 hour offset as float (0 - 1) percent
+
+		// hour12Estimate* - available immediately (if we have enough historical data)
+		hour12EstimateCalculated: {type: Boolean, default: false}, // Estimated market price at 12 hour offset
+		hour12Estimate: {type: Number}, // Market price 12 hour offset
+		hour12EstimatePercent: {type: Number}, // Market price 12 hour offset as float (0 - 1) percent
+
+		// hour24Actual* - available when tweet is >=24 hours old
+		hour24ActualCalculated: {type: Boolean, default: false}, // Indicates if hour24 calculations have been completed
+		hour24Actual: {type: Number}, // Market price 24 hour offset
+		hour24ActualPercent: {type: Number}, // Market price 24 hour offset as float (0 - 1) percent
+
+		// hour24Estimate* - available immediately (if we have enough historical data)
+		hour24EstimateCalculated: {type: Boolean, default: false}, // Estimated market price at 24 hour offset
+		hour24Estimate: {type: Number}, // Market price 24 hour offset
+		hour24EstimatePercent: {type: Number}, // Market price 24 hour offset as float (0 - 1) percent
+	},
+})
+.index({ platform_data: 1 })
+.index({ platform: 1, symbol: 1 })
+.index({ platform: 1, symbol: 1, platform_data: 1 }, { unique: true });
+</script>
+
+<script lang="js" backend schema>
+app.middleware.db.schema('platforms_meta', {
+	created: {type: Date, default: ()=> new Date()},
+	edited: {type: Date, default: ()=> new Date()},
+	platform: {type: String},
+	symbol: {type: String},
+	data: {type: Object},
+})
+.index({ platform: 1, symbol: 1 }, { unique: true });
+</script>
+
+<script lang="js" backend endpoint>
+const moment = require('moment');
+const Highcharts = require('highcharts')();
+
+// FIXME: Fails to load correctly with Highcharts v9.3.1
+//const dataGrouping = require('highcharts/modules/datagrouping')(Highcharts);
+
+// Work-around for datagrouping not working with NPM module
+// @see https://github.com/highcharts/highcharts/issues/12775#issuecomment-591310126
+require('highcharts/modules/datagrouping')(Highcharts);
+const dataGrouping = Highcharts.dataGrouping;
+
+// FIXME: Work-around monkey-patch to avoid another bug
+// @see https://github.com/highcharts/highcharts/issues/12775#issuecomment-974593115
+dataGrouping.options = {};
+
+/**
+* Retrieve data for a given platform and symbol
+* @param {string} req.params.platform The platform to retrieve
+* @param {string} req.params.symbol The symbol to within platform
+* @param {number} req.query.start Begining of data
+* @param {number} req.query.finish End of data
+*/
+app.get('/api/platforms/:platform/:symbol', app.middleware.express.isUser(), (req, res) => {
+	// FIXME: Catch error when table has not yet been defined.
+
+	const qry = {
+		platform: req.params.platform,
+		symbol: req.params.symbol,
+	};
+
+	// NOTE: A text index may make some sense...
+	// if (req.query.terms) qry.$text = {
+	// 	$search: req.query.terms.map(t => `"${t}"`).join(' ')
+	// };
+
+	switch (qry.platform) {
+		case 'twitter':
+			const limit = req.query?.limit || 30;
+
+			// NOTE: We need them all, to display on zoomed out chart.
+			// Pagination may have to be done client-side
+
+			if (req.query.start || req.query.finish) qry.date = {};
+			if (req.query.start) qry.date.$gte = moment(parseInt(req.query.start)).utc().toDate();
+			if (req.query.finish) qry.date.$lt = moment(parseInt(req.query.finish)).utc().toDate();
+
+			app.db.platforms_data
+				.find(qry)
+				.sort('-date')
+				.exec((err, docs) => {
+					if (err) return res.sendError(400, err);
+
+					if (req.query.terms) {
+						// TODO: toString for streams which extracts data.text or whichever field contains the actual content
+						docs = docs
+							.filter(s => req.query.terms
+								.some(t => s.data.text.toLowerCase()
+									.includes(t.toLowerCase())
+								)
+							);
+					}
+
+					// Limiting responses so that "Load more" pagination can be consistent
+					if (limit > 0 && docs.length > limit) docs.length = limit;
+					res.send(docs);
+				});
+			break;
+
+		case 'bitfinex':
+		default:
+			app.db.platforms_data
+				.find(qry)
+				.sort('date')
+				.exec((err, data) => {
+					if (err) return res.sendError(400, err);
+
+					const xData = [];
+					const yData = [];
+
+					data.forEach(d => {
+						xData.push(d.data.d);
+						yData.push(d.data.c);
+						//yData.push([d.data.o, d.data.h, d.data.l, d.data.c]);
+					});
+
+					//app.log({
+					//	from: moment(xData[0]).utc().toDate(),
+					//	to: moment().utc().toDate(),
+					//});
+
+					// @see https://www.highcharts.com/docs/working-with-data/server-side-data-grouping
+					// We use Highcharts.Time to find natural time divisions.
+					const time = new Highcharts.Time();
+					const groupPositions = time.getTimeTicks(
+						{
+							// One tick per day
+							unitRange: 24 * 36e5
+						},
+						(req.query.start)
+							? moment(parseInt(req.query.start)).utc().toDate()
+							: moment(xData[0]).utc().toDate(), // From
+						(req.query.finish)
+							? moment(parseInt(req.query.finish)).utc().toDate()
+							: moment().utc().toDate(), // To
+					);
+
+					// Next, group the data by the groupPositions.
+					// @see https://api.highcharts.com/highstock/series.line.dataGrouping.approximation
+					const {
+						groupedXData,
+						groupedYData
+					} = dataGrouping.groupData(xData, yData, groupPositions, 'average');
+
+					// Transform it to a Highcharts-compatible two-dimensional array.
+					data = groupedXData.map((x, i) => [x, groupedYData[i]]);
+
+					res.send(data);
+				});
+			break;
+	}
+});
+</script>
+
+<script lang="js" backend endpoint>
+const fs = require('fs');
+const sift = require('sift');
+
+const moment = require('moment');
+const Highcharts = require('highcharts')();
+
+// FIXME: Fails to load correctly with Highcharts v9.3.1
+//const dataGrouping = require('highcharts/modules/datagrouping')(Highcharts);
+
+// Work-around for datagrouping not working with NPM module
+// @see https://github.com/highcharts/highcharts/issues/12775#issuecomment-591310126
+require('highcharts/modules/datagrouping')(Highcharts);
+const dataGrouping = Highcharts.dataGrouping;
+
+// FIXME: Work-around monkey-patch to avoid another bug
+// @see https://github.com/highcharts/highcharts/issues/12775#issuecomment-974593115
+dataGrouping.options = {};
+
+/**
+* Retrieve data for a given platform and symbol without being logged in
+* @param {string} req.params.platform The platform to retrieve
+* @param {string} req.params.symbol The symbol to within platform
+* @param {number} req.query.start Begining of data
+* @param {number} req.query.finish End of data
+*/
+app.get('/api/static/platforms/:platform/:symbol', (req, res) => {
+
+	const qry = {
+		platform: req.params.platform,
+		symbol: req.params.symbol,
+	};
+
+	// NOTE: A text index may make some sense...
+	// if (req.query.terms) qry.$text = {
+	// 	$search: req.query.terms.map(t => `"${t}"`).join(' ')
+	// };
+
+	switch (qry.platform) {
+		case 'twitter':
+			const limit = req.query?.limit || 30;
+
+			// NOTE: We need them all, to display on zoomed out chart.
+			// Pagination may have to be done client-side
+
+			if (req.query.start || req.query.finish) qry.date = {};
+			if (req.query.start) qry.date.$gte = new Date(parseInt(req.query.start));
+			if (req.query.finish) qry.date.$lt = new Date(parseInt(req.query.finish));
+
+			fs.promises
+				.readFile(`${app.config.paths.root}/platforms/static/${req.params.platform}/${req.params.symbol}.json`, 'utf8')
+				.then(data => JSON.parse(data)
+					.map(item => {
+						item.date = new Date(item.date);
+						return item;
+					})
+					.filter(sift(qry))
+				)
+				.then(docs => {
+					if (req.query.terms) {
+						// TODO: toString for streams which extracts data.text or whichever field contains the actual content
+						docs = docs
+							.filter(s => req.query.terms
+								.some(t => s.data.text.toLowerCase()
+									.includes(t.toLowerCase())
+								)
+							);
+					}
+
+					// Limiting responses so that "Load more" pagination can be consistent
+					if (limit > 0 && docs.length > limit) docs.length = limit;
+					res.send(docs);
+				})
+				.catch(res.sendError);
+			break;
+
+		case 'bitfinex':
+		default:
+			fs.promises
+				.readFile(`${app.config.paths.root}/platforms/static/${req.params.platform}/${req.params.symbol}.json`, 'utf8')
+				.then(data => JSON.parse(data)
+					.map(item => {
+						item.date = new Date(item.date);
+						return item;
+					})
+					//.filter(sift(qry))
+				)
+				.then(data => {
+					const xData = [];
+					const yData = [];
+
+					data.forEach(d => {
+						xData.push(d.data.d);
+						yData.push(d.data.c);
+						//yData.push([d.data.o, d.data.h, d.data.l, d.data.c]);
+					});
+
+					//app.log({
+					//	from: moment(xData[0]).utc().toDate(),
+					//	to: moment().utc().toDate(),
+					//});
+
+					// @see https://www.highcharts.com/docs/working-with-data/server-side-data-grouping
+					// We use Highcharts.Time to find natural time divisions.
+					const time = new Highcharts.Time();
+					const groupPositions = time.getTimeTicks(
+						{
+							// One tick per day
+							unitRange: 24 * 36e5
+						},
+						(req.query.start)
+							? moment(parseInt(req.query.start)).utc().toDate()
+							: moment(xData[0]).utc().toDate(), // From
+						(req.query.finish)
+							? moment(parseInt(req.query.finish)).utc().toDate()
+							: moment().utc().toDate(), // To
+					);
+
+					// Next, group the data by the groupPositions.
+					// @see https://api.highcharts.com/highstock/series.line.dataGrouping.approximation
+					const {
+						groupedXData,
+						groupedYData
+					} = dataGrouping.groupData(xData, yData, groupPositions, 'average');
+
+					// Transform it to a Highcharts-compatible two-dimensional array.
+					data = groupedXData.map((x, i) => [x, groupedYData[i]]);
+
+					res.send(data);
+				})
+				.catch(res.sendError);
+			break;
+	}
+});
+</script>
+
+<script lang="js" backend endpoint>
+/**
+* Fetch a specific platforms_data element
+* @param {string} req.params.platform The platform for the point
+* @param {string} req.params.id The ID of the point to fetch
+*/
+app.get('/api/platforms/:platform/point/:id', app.middleware.express.isUser(), (req, res) => {
+	db.platforms_data.findOne({
+		_id: req.params.id,
+		platform: req.params.platform,
+	})
+		.then(point => point || Promise.reject('404: Point not found'))
+		.then(point => res.send(point))
+		.catch(res.sendError)
+});
+</script>
+
+<script lang="js" backend endpoint>
+const _ = require('lodash');
+const axios = require('axios').default;
+
+const http = axios.create({
+	timeout: 5000,
+	responseType: 'json',
+	responseEncoding: 'utf8',
+});
+http.defaults.headers.common['Authorization'] = 'Bearer ' + 'AAAAAAAAAAAAAAAAAAAAAPC0QQEAAAAA%2FeSFhdCSinXd7tzme8lnrszxQQ0%3DEXylXxA7Vn7nnwrIZExa1IgdenHic4DfVzXiF09yx5spNoI8iw';
+
+// Add this function to handle sentiment analysis
+async function analyzeSentiment(text) {
+    try {
+        const response = await axios.post('http://localhost:8000/api/sentiment/analyze', {
+            text: text,
+            lang: 'en'
+        });
+        return response.data;
+    } catch (error) {
+        app.log.warn('Sentiment analysis failed:', error);
+        return null;
+    }
+}
+
+/**
+* Validate platform supports the given symbol
+* @param {string} req.params.platform The platform to check against
+* @param {string} req.query.symbol The symbol to lookup within platform
+*
+* @example /api/platforms/twitter/exists?symbol=elonmusk
+*/
+app.get('/api/platforms/:platform/exists', app.middleware.express.isUser(), (req, res) => {
+	switch (req.params.platform) {
+		case 'twitter':
+			http.get(`https://api.twitter.com/2/users/by/username/${req.query.symbol}`)
+				.then(({data}) => res.send({ symbol: data.data.username }))
+				.catch(e => {
+					if (e.response) {
+						// Request made and server responded
+						app.log.warn('TWITTER ERROR', e.response.data);
+						app.log.warn('TWITTER ERROR', e.response.status);
+						app.log.warn('TWITTER ERROR', e.response.headers);
+					} else if (e.request) {
+						// The request was made but no response was received
+						app.log.warn('TWITTER ERROR', e.request);
+					} else {
+						// Something happened in setting up the request that triggered an Error
+						app.log.warn('TWITTER ERROR', e.message);
+					}
+
+					if (e.response?.status === 403) {
+						res.send({ symbol: req.query.symbol })
+					} else {
+						res.sendError('404: Not found');
+					}
+				});
+			break;
+		default:
+			res.send({ symbol: req.query.symbol });
+			break;
+	}
+});
+</script>
+
+<script lang="js" backend endpoint>
+const _ = require('lodash');
+
+/**
+* Suggest symbols supported by platform
+* @param {string} req.params.platform The platform to check against
+* @param {string} req.query.symbol The symbol or partial symbol to lookup within platform
+*
+* @example /api/platforms/bitfinex/suggest?symbol=btc
+*/
+app.get('/api/platforms/:platform/suggest', app.middleware.express.isUser(), (req, res) => {
+	if (!req.params.platform) return res.send([]);
+
+	app.agents.get(`platforms.${req.params.platform}.tickers`)
+		.then(d => (req.query.symbol)
+			? res.send(d.filter(t => _.startsWith(t.toLowerCase(), req.query.symbol.toLowerCase())))
+			: res.send(d.filter(t => _.endsWith(t.toLowerCase(), 'usd')))
+		)
+		.catch(e => res.send([]));
+});
+</script>
+
+<script lang="js" backend endpoint>
+// Modify your platform endpoint to include sentiment analysis
+app.get('/api/platforms/:platform/data', app.middleware.express.isUser(), async (req, res) => {
+    // ...existing code...
+    try {
+        const sentiment = await analyzeSentiment(text);
+        // Add sentiment data to your response
+    } catch (error) {
+        res.sendError('500: Sentiment analysis failed');
+    }
+});
+</script>

@@ -1,0 +1,45 @@
+<script lang="js" backend on="postEndpoints">
+/**
+* Expose the main layouts HTML page as a static resource adding basic Lodash templating of strings
+* @param {array<string>} app.config.layout.headInject HTML head area content to inject into the layout <head/> area
+* @param {array<string>} req.layoutHeaders Additional headers, based on the request object, to inject into the layout <head/> area
+*/
+
+var _ = require('lodash');
+var fs = require('fs');
+
+exports = Promise.resolve()
+	.then(()=> fs.promises.readFile(`${app.config.paths.root}/layouts/main.html`, 'utf8'))
+	.then(contents => _.template(contents))
+	.then(template => app.get('/', (req, res) =>
+		res
+			.type('html')
+			.set('Content-Security-Policy', Object.entries(app.config.layout.csp) // FIXME: Custom checkboxes base64 embedded SVG icons - https://github.com/twbs/bootstrap/issues/25394
+				.filter(([type, allowed]) => allowed.length > 0) // Remove empty
+				.map(([type, allowed]) => type
+					+ ' '
+					+ Array.from(new Set(allowed)).join(' ')
+				)
+				.join('; ')
+			)
+			.send(template({
+				app,
+				layoutHeaders: [].concat(
+					app.config.layout.headInject,
+					req.layoutHeaders ?? [],
+				),
+			}))
+	))
+</script>
+
+<script lang="js" backend endpoint>
+app.config.layout.excludeBase.push('/robots.txt'); // Add to base exclusion rules
+
+app.get('/robots.txt', (req, res) => res
+	.type('text/plain; charset=utf-8')
+	.send(''
+		+ 'User-agent: *\n'
+		+ 'Disallow: /\n'
+	)
+);
+</script>

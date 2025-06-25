@@ -1,0 +1,22 @@
+{
+  "name": "@doop/service-morph",
+  "version": "1.0.0",
+  "description": "$morph UI service for the Doop framework",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MomsFriendlyDevCo/doop-service-morph.git"
+  },
+  "keywords": [
+    "doop",
+    "morph"
+  ],
+  "author": "Matt Carter <m@ttcarter.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/MomsFriendlyDevCo/doop-service-morph/issues"
+  },
+  "homepage": "https://github.com/MomsFriendlyDevCo/doop-service-morph#readme",
+  "dependencies": {
+    "quasar": "^2.0.3"
+  }
+}

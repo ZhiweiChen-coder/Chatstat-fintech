@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "$(readlink -f "${BASH_SOURCE[0]}" || ${BASH_SOURCE[0]})" )" &> /dev/null && pwd )
+
+sh -c "SITE_NAME=\"CHATSTAT-DEV\" \
+SITE_PATH=\"/sites/dev.chatstat.com\" \
+SITE_BRANCH=\"master\" \
+SITE_ENV=\"dev.chatstat.com\" \
+SITE_PROCESSES=\"2\" \
+SITE_PREFIX=\"dev\" \
+SITE_LIST=\"\" \
+SITE_PORT=\"10201\" \
+SITE_PRIMARY=\"-o cache.cleanAuto=true -o mongo.migration=true\" \
+$SCRIPT_DIR/deploy"

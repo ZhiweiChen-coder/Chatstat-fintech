@@ -1,0 +1,23 @@
+<script lang="js" backend on="middleware">
+const emt = require('@momsfriendlydevco/express-middleware-throttle');
+
+/*
+// New Lock instance with specific collection for middleware locks
+{
+	lock: {
+		...app.config.lock,
+		mongodb: {
+			...app.config.lock.mongodb,
+			collection: 'middleware_locks',
+		}
+	},
+	...app.config.throttle,
+}
+*/
+
+app.middleware.express.throttle = emt({
+	// NOTE: We re-use the lock instance to ensure there aren't multiple calls to mongoosy.connect()
+	lock: app.lock,
+	...app.config.throttle,
+});
+</script>

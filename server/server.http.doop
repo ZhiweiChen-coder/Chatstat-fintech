@@ -1,0 +1,218 @@
+<script lang="js" backend on="init">
+/**
+* Create dummy Express(like) methods which queue up endpoints
+* These get processed in a later hook which turns them into real Express endpoints on `app`
+* This is so that route paths can be 'sane' sorted similar to the front end (i.e. '/api/widgets/create' sorts before '/api/widgets/:id')
+*/
+var _ = require('lodash');
+
+/**
+* Storage for future endpoints, deleted when processed
+* All calls to app.get() etc. are created as elements in this list so they can be sorted after the main express loader has finished
+* @type {array<Object>}
+* @property {string} method The HTTP method to wrap (also 'set')
+* @property {string} path The path to setup the endpoint on
+* @property {*} [...args] Additional Express compatible behaviour to queue up
+*/
+app.endpoints = [];
+
+['all', 'delete', 'get', 'head', 'options', 'patch', 'post', 'set', 'use'].forEach(method =>
+	app[method] = (path, ...args) => {
+		if (!app.config.isProduction && app.endpoints.some(e => e.method == method && e.path == path)) app.log.warn('Duplicate endpoint registered -', app.log.colors.blue(`app.${method}('${path}')`));
+		app.endpoints.push({method, path, args})
+	}
+);
+</script>
+
+<script lang="js" backend on="server">
+/**
+* Initalize core server
+*/
+var _ = require('lodash');
+var bodyParser = require('body-parser');
+var cookieParser = require('cookie-parser');
+var compression = require('compression');
+var cors = require('cors');
+var crash = require('@momsfriendlydevco/crash');
+var historyFallback = require('connect-history-api-fallback-exclusions');
+var helmet = require('helmet');
+var express = require('express');
+
+app.emit('preExpress');
+app.express = express();
+app.emit('postExpress');
+
+
+// NOTE: We're using app.express rather than app.use as we want the raw express hook rather than our custom wrapped one
+app.express.use(helmet());
+app.express.use(cors());
+app.express.use(historyFallback({ // Route all HTTP elements to '/' to support non-hashbang mode
+	index: '/',
+	exclusions: app.config.layout.excludeBase.map(b =>
+		_.isString(b) && b.endsWith('*') ? new RegExp('^' + RegExp.escape(b.replace(/\*$/, '')), 'i')
+		: _.isString(b) ? new RegExp('^' + RegExp.escape(b.replace(/\*$/, '')) + '$', 'i')
+		: _.isRegExp(b) ? b
+		: (()=> { throw new Error(`Unknown app.config.layout.excludeBase rule: "${b}"`) })()
+	),
+	//verbose: true,
+	logger: app.log.bind(app),
+}));
+app.express.use(cookieParser());
+app.express.use(bodyParser.json({limit: '64mb'}));
+app.express.use(bodyParser.urlencoded({limit: '16mb', extended: false}));
+app.express.use(compression());
+
+// Extend the Res object so it contains the new res.sendError() reporting function
+app.express.use(function(req, res, next) {
+
+	/**
+	* Report an error via Express, optionally showing a trace
+	*
+	* This is really just a convenience function to set all the weird headers when an error occurs
+	*
+	* HTTP response codes are determined by the logic:
+	*
+	*     1. If `code` is provided and is finite
+	*     2. If `err` is a string and is prefixed as `xxx:Text` the first part is used as the HTTP response code with the second as the error message
+	*     3. Otherwise `400` is assumed and a stack trace shown if passed an error object
+	*
+	* @param {number} [code=400] Optional error code to use
+	* @param {string} err The error to report
+	* @return {undefined} This function is fatal to express as it closes the outbound connection when it completes
+	*
+	* @example Throw error 404
+	* res.sendError(404)
+	*
+	* @example Throw general error with 400 - this will also show a trace
+	* res.sendError('This is an error')
+	*
+	* @example Throw error 512 with custom text within one string - will not show a trace (as the code indicates the function handled the response)
+	* res.sendError('512: This is a custom error')
+	*/
+	res.sendError = function(code, err) {
+		// Process optional string prefix (if we're using the default error fallback)
+		var resCode, resError; // Actual response code(number) + error(string)
+		var showThrow = true; // Whether to show the full trace on the console, disabled if it looks like the upstream handled the response correctly
+
+		var errBits;
+		if (isFinite(code)) { // User provided explicit code argument
+			resCode = code;
+			resErr = err;
+			showThrow = false;
+		} else if (errBits = /^(?<code>\d+)\s*:\s*(?<err>.*)$/.exec(code)?.groups) { // Can extract code from error string
+			resCode = errBits.code;
+			resErr = errBits.err;
+			showThrow = false;
+		} else if (_.isError(code)) { // Given raw error object
+			err = code;
+			resCode = 400;
+			resErr = code.toString();
+			showThrow = true;
+		} else { // No code we can work out nor extract, assume 400
+			resCode = 400;
+			resErr = 'An error occured';
+			err = new Error('An unhandled error occured');
+			showThrow = true;
+		}
+
+		res.errorBody = resErr; // Populate errorBody so upstream loggers can display a digest
+		if (!res.headersSent) {
+			res.format({
+				json: ()=> res
+					.status(resCode)
+					.send({err: resErr}),
+				default: ()=> res
+					.status(resCode)
+					.send(resErr),
+			})
+		} else {
+			app.log.warn('Cannot send error when headers have already been sent');
+		}
+
+		if (showThrow) // If given an actual error object AND the user didn't provide a handled HTTP code - show a trace
+			crash.trace(err, {prefix: 'Caught server error'});
+	};
+
+	next();
+});
+</script>
+
+<script lang="js" backend on="server">
+/**
+* Explode all endpoints in app.endpoints into actual Express endpoints
+*/
+var _ = require('lodash');
+_(app.endpoints)
+	.sortBy(endpoint => {
+		var sortPath = // Decide primary path element to sort by
+			_.isString(endpoint.path) ? endpoint.path // Strings: Use simple string if there is only one route
+			: _.isArray(endpoint.path) ? _.first(endpoint.path) // Arrays: Use first element if its an array
+			: _.isRegExp(endpoint.path) ? endpoint.path.toString().replace(/\/\//g, '/') // RegExp: try to tidy up path components at least
+			: null; // Use null - should sort to high priority
+
+		return _.isString(sortPath) // Translate "/" + ":" into low ranking sort characters
+			? sortPath
+				.replace(/\//g, String.fromCharCode(824))
+				.replace(/:/g, String.fromCharCode(818))
+				.replace(/\?/g, String.fromCharCode(825))
+			: '';
+	})
+	.forEach(endpoint => {
+		app.express[endpoint.method](...[
+			endpoint.path,
+			...endpoint.args,
+		].filter(i => i));
+	});
+
+delete app.endpoints; // Prevent usage of endpoints now its been processed
+
+// Replace all app methods with warnings
+['all', 'delete', 'get', 'options', 'patch', 'post', 'set', 'use'].forEach(method =>
+	app[method] = path => app.log.warn('Attemping to set up express path at', app.log.colors.cyan(path), 'after server hook has fired - request rejected')
+);
+</script>
+
+<script lang="js" backend on="server">
+var fs = require('fs');
+var http = require('http');
+var https = require('https');
+var express = require('express');
+var url = require('url');
+
+return new Promise(resolve => {
+	if (app.config.ssl.enabled && !fs.existsSync(app.config.ssl.cert)) {
+		app.log.warn('SSL enabled but cert file is missing, assuming', app.log.colors.yellow('production simulation mode'), 'without SSL');
+		app.config.ssl.enabled = false;
+		app.config.url = 'http://localhost';
+		app.config.host = 'localhost';
+	}
+
+	if (app.config.ssl.enabled) { // SSL enabled
+		if (app.config.ssl.redirect) { // If SSL enabled + redirect enabled, create basic server to redirect to HTTPS server
+			app.log.debug('server.http - use HTTP server w/ redirect to HTTPS');
+			var redirectApp = express();
+			redirectApp.get('/*', function(req, res) {
+				res.redirect('https://' + url.parse(app.config.url).hostname + req.url); // Force HTTPS protocol, irrespective of specified protocol in app.config.url
+			});
+			app.serverHttp = http.createServer(redirectApp).listen(80);
+			app.serverHttp.timeout = app.config.timeout;
+		}
+
+		// Create HTTPS server
+		app.log.debug('server.https - create HTTPS server');
+		app.server = https.createServer({
+			cert: fs.readFileSync(app.config.ssl.cert),
+			key: fs.readFileSync(app.config.ssl.key),
+		}, app.express).listen(443, resolve);
+		app.server.timeout = app.config.timeout;
+	} else {
+		app.log.debug('server.http - use basic HTTP server only');
+		app.server = app.express.listen(app.config.port, app.config.host, resolve);
+		app.server.timeout = app.config.timeout;
+	}
+});
+</script>
+
+<script lang="js" backend on="ready">
+app.log('Web interface listening at', app.log.colors.cyan(app.config.url));
+</script>

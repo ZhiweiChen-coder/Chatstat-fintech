@@ -1,0 +1,11 @@
+<script lang="js" backend on="migrations">
+app.migration('globalRivers', 'Copy global setting to new field', ()=>
+	app.db.rivers
+		.find({ globalRiverId: { $gt: 0 }})
+		.then(res => res.map(doc => {
+			doc.global = true;
+			return doc.save();
+		}))
+		.then(promises => Promise.all(promises))
+)
+</script>

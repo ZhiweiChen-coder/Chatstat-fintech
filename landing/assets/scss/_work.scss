@@ -1,0 +1,124 @@
+//
+// work.scss
+//
+
+
+.filter-box {
+    display: none;
+    &.show {
+        display: block;
+    }
+}
+
+//index_property.html
+.property-list {
+    transition: all 0.5s cubic-bezier(0.68, -0.55, 0.27, 1.55) 0s;
+    .image {
+        img {
+            transition: all 0.5s ease;
+        }
+        .overlay {
+            position: absolute;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            opacity: 0; 
+            transition: all 0.5s ease;
+        }
+        .price, .details {
+            position: absolute;
+            opacity: 0;
+            z-index: 1;
+            transition: all 0.5s ease;
+            bottom: 20px;
+        }
+        .price {
+            right: 20px;
+        }
+        .details {
+            left: 20px;
+        }
+    }
+    &:hover {
+        transform: translateY(-7px);
+        box-shadow: $shadow;
+        .image {
+            img {
+                transform: scale(1.1);
+            }
+            .overlay {
+                opacity: 0.5;
+            }
+            .price, .details {
+                opacity: 1;
+            }
+        }
+    }
+}
+
+//index_freelancer.html
+.work-container {
+    transition: all 0.5s ease;
+    img, .content, .content .title {
+        transition: all 0.5s ease;
+    }
+    .content {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        left: 0;
+        transform: translateY(150px);
+        overflow: hidden;
+        .title {
+            &:hover {
+                color: $primary !important;
+            }
+        }
+    }
+    &:hover {
+        box-shadow: $shadow;
+        img {
+            transform: translateY(-20px) scale(1.05) rotate(5deg);
+        }
+        .content {
+            transform: translateY(0);
+        }
+    }
+}
+//page_work_single.html
+.work-detail, .casestudy {
+    .title {
+        font-size: 24px;
+    }
+    .description {
+        font-size: 18px;
+    }
+    ul {
+        li {
+            b {
+                max-width: 90px;
+                width: 100%;
+                display: inline-block;
+            }
+        }
+    }
+}
+
+.spacing {
+    padding: 7px;
+}
+
+
+.container-filter {
+    li {
+        a {
+            transition: all 0.4s ease-in-out;
+            line-height: 30px;
+            &:hover, &.active {
+                color: $white !important;
+                background-color: $primary;
+            }
+        }
+    }
+}

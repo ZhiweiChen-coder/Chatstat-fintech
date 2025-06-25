@@ -1,0 +1,86 @@
+<script lang="js" backend endpoint>
+const email = require('@momsfriendlydevco/email');
+const fs = require('fs');
+const validator = require('validator');
+
+var settings = {
+	redirect: false,
+};
+let logo;
+
+// let emailSelect = {
+// 	Account: "sales@chatstat.com",
+// 	Support: "support@chatstat.com",
+// 	Sales: "sales@chatstat.com",
+// 	Suggestions: "support@chatstat.com",
+// 	Partnerships: "info@chatstat.com",
+// 	Intergration: "sales@chatstat.com",
+// 	OtherQuestions: "info@chatstat.com"
+// }
+
+
+function selectEmail(enquiryType) {
+	switch (enquiryType) {
+		case 'Accounts':
+		case 'Sales':
+		case 'Partnerships':
+		case 'Integrations':
+			return("sales@chatstat.com")
+		case 'Support':
+			return("support@chatstat.com")
+		case 'Suggestions':
+		case 'Other Questions':
+			return('info@chatstat.com')
+	}
+}
+
+app.post([
+	'/api/contactus/',
+	...(app.config.session.auth.allowPost ? ['/contactus'] : []),
+], (req, res) => Promise.resolve()
+// Sanity checks {{{
+	.then(()=> {
+		if (!app.config.email.enabled) throw new Error('Contact form email disabled');
+		if (!req.body) throw new Error('No Details');
+		if (!req.body.name) throw new Error('400: No name provided');
+		if (!req.body.email) throw new Error('400: No email address provided');
+		if (!req.body.message) throw new Error('400: No message provided');
+		if (!validator.isEmail(req.body.email)) throw new Error('400: Email address is not valid');
+		req.body.email = req.body.email.toLowerCase();
+	})
+	// Fetch email attachments {{{
+	.then(()=> Promise.all([
+		fs.promises
+			.readFile(`${app.config.paths.root}/assets/logo/logo-full-primary.png`)
+			.then(res => logo = res)
+	]))
+	.then(() => {
+		const to = selectEmail(req.body.enquiryType);
+		console.log(`Sending: ${req.body.email} -> ${to} (${req.body.enquiryType})`);
+		return to;
+	})
+	.then(to => email().send({
+		to: to,
+		subject: `New ${app.config.title} contact form (${req.body.enquiryType}) submission`,
+		template: `${app.config.paths.root}/widgets/contactform/contactform.html`,
+		attachments: [
+			{
+				filename: 'logo.png',
+				cid: 'logo.png',
+				content: logo.toString('base64'),
+				contentType: 'image/png',
+				encoding: 'base64',
+			}
+		],
+		templateParams: {
+			ip: req.headers['x-forwarded-for'] || req.connection.remoteAddress,
+			enquiryType: req.body.enquiryType,
+			email: req.body.email,
+			message: req.body.message,
+			name: req.body.name,
+		},
+	}))
+	.then(() => res.status(200).send('Sent'))
+	.catch(res.sendError)
+)
+</script>

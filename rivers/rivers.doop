@@ -1,0 +1,274 @@
+<script lang="js" backend schema>
+app.middleware.db.schema('rivers', {
+	created: {type: Date, default: Date.now},
+	edited: {type: Date, default: Date.now},
+	now: {type: Date}, // TODO: Another word?
+	status: {type: String, enum: ['active', 'paused', 'deleted'], default: 'active', index: true},
+	title: {type: 'string'},
+	global: {type: 'boolean', default: false},
+	static: {type: 'boolean', default: false},
+	notifications: {type: 'boolean', default: true},
+	streams: [{
+		title: {type: 'string'},
+		symbol: {type: 'string'},
+		platform: {type: 'string', enum: ['twitter'], required: true}, // ENUM['facebook','twitter']
+	}],
+	flows: [{
+		// TODO: Currency. Flows are about price data, but currency may be based on platform or symbol.
+		title: {type: 'string'},
+		symbol: {type: 'string'}, // AMAZ, TSLA, BTCUSD
+		//market: {type: 'string'}, // TODO: ? ENUM['nasdaq','nyse','bitfinex'] where platform is ENUM['crypto','stock']
+		platform: {type: 'string', enum: ['bitfinex', 'nasdaq', 'nyse'], required: true}, // ENUM['nasdaq','nyse','bitfinex']
+	}],
+	terms: [{
+		//color: {type: 'string', enum: ['']}, // TODO: Colors for badges. Here?
+		term: {type: 'string'}, // String assumed as `/\b${STRING}/i` matching via RegExp
+		isActive: {type: 'boolean', default: true},
+	}],
+	users: [{
+		user: {type: 'pointer', ref: 'users', index: true},
+	}],
+})
+
+.post('save', function(doc, next) {
+	['flows', 'streams'].forEach(t =>
+		doc[t].forEach(f =>
+			app.agents && app.agents.has(`platforms.${f.platform}`) && app.agents.run(`platforms.${f.platform}`, { symbols: [f.symbol] })
+		)
+	);
+
+	// Refresh static items whenever one is saved
+	if (doc.static && app.agents && app.agents.has('rivers.static'))
+		app.agents.run('rivers.static');
+
+	/*
+	// Only run agent on the initial river creation
+	if (doc && doc.__v > 0) return next();
+
+	// Running agents only when there is no data
+	['flows', 'streams'].forEach(t =>
+		doc[t].forEach(f =>
+			// Check if any data already exists
+			app.db.platforms_data.countDocuments({
+				platform: f.platform,
+				symbol: f.symbol,
+			})
+			// Run agent when empty
+			.then(res => (res === 0) ? app.agents.run(`platforms.${f.platform}`, { symbols: [f.symbol] }) : undefined)
+		)
+	);
+	*/
+	next();
+})
+</script>
+
+
+<script lang="js" backend endpoint>
+var _ = require('lodash');
+var moment = require('moment');
+
+/**
+* Fetch the 3, 12, 24h market positions from platforms_data for a given tweet within a river
+* @param {string} req.params.id The ID of the river
+* @param {string} req.params.tweetId The ID of the tweet to examine
+* @returns {Object} An object containing the digest of the tweet market information, see the code for details
+*/
+// TODO: Does this get secured? But then guests? More static data?
+app.get('/api/timeline/:platform/:symbol/:platform_data', (req, res) => {
+	db.platforms_data_movement.findOne({
+		platform: req.params.platform,
+		symbol: req.params.symbol,
+		platform_data: req.params.platform_data,
+	})
+		.then(movement => movement || Promise.reject('400: Not enough data'))
+		.then(movement => db.platforms_data.findById(movement.platform_data)
+			.then(tweet => ({tweet, movement}))
+		)
+		.then(({movement, tweet}) => res.send({
+			..._([0, 3, 12, 24])
+				.mapKeys(hour => `hour${hour}`)
+				.mapValues(hour => ({
+					date: moment(tweet.date).add(hour, 'hours').toDate(),
+					actualCalculated: movement?.values?.[`hour${hour}ActualCalculated`] || false,
+					actual: movement?.values?.[`hour${hour}ActualCalculated`] ? movement.values[`hour${hour}Actual`] : undefined,
+					actualPercent: movement?.values?.[`hour${hour}ActualCalculated`] ? movement.values[`hour${hour}ActualPercent`] : undefined,
+
+					estimateCalculated: movement?.values?.[`hour${hour}EstimateCalculated`] || false,
+					estimate: movement?.values?.[`hour${hour}EstimateCalculated`] ? movement.values[`hour${hour}Estimate`] : undefined,
+					estimatePercent: movement?.values?.[`hour${hour}EstimateCalculated`] ? movement.values[`hour${hour}EstimatePercent`] : undefined,
+				}))
+				.set('hour0', {
+					date: tweet.date,
+					actualCalculated: movement?.values?.hour0ActualCalculated,
+					actual: movement?.values?.hour0Actual,
+				})
+				.value()
+		}))
+		.catch(res.sendError)
+});
+</script>
+
+<script lang="js" backend endpoint>
+const email = require('@momsfriendlydevco/email');
+const fs = require('fs');
+const _ = require('lodash');
+
+// Platform to singular {{{
+// TODO: Encapsulate duplication
+function platformSingular(platform){
+	const map = {
+		facebook: 'post',
+		twitter: 'tweet',
+		rss: 'RSS',
+	};
+
+	return map[platform.toLowerCase()]
+}
+///}}}
+
+let logo;
+
+// TODO: Should this be a POST?
+app.get('/api/notify/:river/:stream', app.middleware.express.isUser(), (req, res) =>
+	Promise.resolve()
+		// Fetch email attachments {{{
+		// FIXME: Put in a more logical place? maybe right before dispatch email step
+		.then(()=> Promise.all([
+			fs.promises
+				.readFile(`${app.config.paths.root}/assets/logo/logo-full-primary.png`)
+				.then(res => logo = res)
+		]))
+		// }}}
+		.then(() => Promise.all([
+			app.db.rivers.findOne({_id: req.params.river, status: 'active', notifications: true}),
+			app.db.platforms_data.findOne({_id: req.params.stream}),
+		]))
+		.then(([river, stream]) => {
+			if (!river) return Promise.reject('404: River not found');
+			if (!stream) return Promise.reject('404: Stream data not found');
+			// Testing email.enabled after queries to support multiple notification types in future
+			if (app.config.email.enabled) {
+				console.log(`Sending: "${river.title}" ${app.config.email.from} -> ${req.user.email}`);
+				return email().send({
+					from: app.config.email.from,
+					to: req.user.email,
+					subject: `New event for ${river.title}`,
+					cc: [],
+					attachments: [
+						{
+							filename: 'logo.png',
+							cid: 'logo.png',
+							content: logo.toString('base64'),
+							contentType: 'image/png',
+							encoding: 'base64',
+						}
+					],
+					template: `${app.config.paths.root}/emails/emailTemplates.email.notification.html`,
+					templateParams: {
+						river: river.title,
+						stream: stream.data.author_name,
+						symbol: `@${stream.symbol}`,
+						type: platformSingular(stream.platform),
+						logo: `${app.config.publicUrl}/assets/logo/logo.svg`,
+						url: `${app.config.publicUrl}/tweets/${req.params.river}/${req.params.stream}`,
+						signoff: app.config.email.signoff,
+						config: _.pick(app.config, [
+							'name',
+							'title',
+							'email',
+							'session',
+						]),
+					},
+				});
+			}
+
+		})
+		.then(()=> res.sendStatus(200))
+		.catch(err => res.send(err))
+)
+</script>
+
+<script lang="js" backend endpoint>
+app.get('/api/global/rivers', (req, res) => {
+	app.db.rivers.find({ global: true }, { _id: 1, title: 1 })
+		.then(data => res.send(data))
+		.catch(res.sendError);
+});
+</script>
+
+<script lang="js" backend endpoint>
+const fs = require('fs');
+
+// TODO: Simplier way to serve static files?
+// TODO: Ability to select different files from within static directory
+app.get('/api/static/rivers', (req, res) => {
+	fs.promises
+		.readFile(`${app.config.paths.root}/rivers/static/static.json`, 'utf8')
+		.then(data => res.send(data))
+		.catch(res.sendError);
+});
+</script>
+
+<script lang="js" backend endpoint>
+// Restrict river listing to only those this user has access to
+const hasUser = (global = true) => (req, res, next) => {
+	// TODO: This could be replaced with Mongoosy patch:
+	// https://github.com/MomsFriendlyDevCo/ChatStat/commit/b7977f71f9399feae5f916008e629153d897b790
+	// https://github.com/MomsFriendlyDevCo/Mongoosy/commit/304b3f0a01abe3509691cc466c9e20bb90aec405
+	// TODO: This 'undefined' was only required as a stop-gap measure for a client-side issue.
+	if (!req.params?.id || req.params?.id === 'undefined') return res.sendError('404: Not found');
+
+	const qry = {
+		_id: req.params.id,
+		$or: [],
+	};
+
+	if (global)
+		qry['$or'].push({
+			global: true
+		});
+
+	if (req.user?._id)
+		qry['$or'].push({
+			'users.user': req.user._id,
+		});
+
+	app.db.rivers.countDocuments(qry)
+		.then(found => (found === 0) ? res.sendError('404: Not found') : next())
+		.catch(() => res.sendError('404: Not found'));
+};
+
+app.use([
+	'/api/rivers/:id?',
+	'/api/global/rivers/:id', // Reusing route for globals, unlike statics which are different
+	], app.middleware.express.rest('rivers', {
+	get: [
+		//app.middleware.express.hasPermission('riversRead'),
+		// app.middleware.express.isUser(), // 允许未登录访问
+		//hasUser(), // Remove user check for guest access
+	],
+	query: [
+		//app.middleware.express.hasPermission('riversRead'),
+		// app.middleware.express.isUser(), // 允许未登录访问
+		app.middleware.express.copyParams({params: {
+			'req.user._id': (v, req) => req.query['users.user'] = v,
+		}}),
+	],
+	count: 'query',
+	create: [
+		//app.middleware.express.hasPermission('riversCreate'),
+		app.middleware.express.isUser(),
+	],
+	save: [
+		//app.middleware.express.hasPermission('riversUpdate'),
+		app.middleware.express.isUser(),
+		hasUser(false),
+	],
+	meta: true,
+	delete: [
+		//app.middleware.express.hasPermission('riversDelete'),
+		app.middleware.express.isUser(),
+		hasUser(false),
+	],
+}));
+</script>

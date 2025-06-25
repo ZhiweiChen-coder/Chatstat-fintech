@@ -1,0 +1,45 @@
+.cs-gauge {
+	border-bottom: 1px solid $secondary;
+	height: 1.5em;
+	position: relative;
+	width: 3em;
+}
+
+// gauge semi-circle dial
+.cs-gauge {
+	&::before {
+		background: conic-gradient(from -180deg at 50% 100%, white 180deg, #25d366 360deg);
+		background-clip: content-box;
+		border: 1px solid $secondary;
+		border-bottom: 0;
+		border-top-left-radius: 999px;
+		border-top-right-radius: 999px;
+		box-sizing: border-box;
+		content: '';
+		display: block;
+		height: 100%;
+		width: 100%;
+	}
+
+	&.is-empty::before {
+		background: white;
+	}
+}
+
+// gauge indicator pointer
+.cs-gauge-pointer {
+	border-bottom: calc(1.5em + 8px) solid $dark;
+	border-bottom-left-radius: 999px;
+	border-bottom-right-radius: 999px;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	bottom: -4px;
+	left: calc(50% - 4px);
+	position: absolute;
+	transform-origin: center calc(1.5em + 4px);
+	width: 8px;
+}
+
+.cs-gauge.is-empty > .cs-gauge-pointer {
+	display: none;
+}
